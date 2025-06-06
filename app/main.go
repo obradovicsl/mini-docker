@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 )
@@ -23,13 +22,20 @@ func main() {
 	command := os.Args[3]
 	args := os.Args[4:len(os.Args)]
 
+	// NEW CODE WITH PIPED FD
 	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	if err := cmd.Run(); err != nil {
-		fmt.Println("Fatall: ", err)
+		// fmt.Println("Fatall: ", err)
+		// os.Exit(1)
+		if exitErr, ok := err.(*exec.ExitError); ok{
+			os.Exit(exitErr.ExitCode())
+		}
+		os.Exit(1)
 	}
 
+	// OLD CODE WITH OUTPUT
 	// output, err := cmd.Output()
 	// if err != nil {
 	// 	fmt.Printf("Err: %v", err)
