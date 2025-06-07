@@ -1,0 +1,2 @@
+- By setting `cmd.Stdout` and `cmd.Stderr`, we're **wiring** the child process’s output streams to the parent’s.  
+- Technically, this means we’re **reusing the parent process’s file descriptors** (`1` for stdout, `2` for stderr) in the child — so when the child writes to its stdout/stderr, it flows directly to the terminal or wherever the parent was writing.
