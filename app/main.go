@@ -19,6 +19,17 @@ import (
 var _ = os.Args
 var _ = exec.Command
 
+type Manifest struct {
+	SchemaVersion int `json:"schemaVersion"`
+	Config        struct {
+		Digest string `json:"digest"`
+	} `json:"config"`
+	Layers []struct {
+		Digest string `json:"digest"`
+		Size   int    `json:"size"`
+	} `json:"layers"`
+}
+
 type nullReader struct{}
 
 func (nullReader) Read(p []byte) (n int, err error) { return len(p), nil }
@@ -42,13 +53,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	println(imageName, imageVersion)
 	token, err := getAuthToken(imageName)
 	if err != nil {
 		fmt.Fprint(os.Stderr, "Auth failed: ", err)
 		os.Exit(1)
 	}
-	fmt.Println("Token: ", token)
+
+	manifest, err := getImageManifest(imageName, imageVersion, token)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Get manifest failed: ", err)
+		os.Exit(1)
+	}
+	
 
 	// CHROOT ISOLATION
 
@@ -119,8 +135,38 @@ func main() {
 
 }
 
+func getImageManifest(imageName, imageVersion, token string) (Manifest, error) {
+	manifestURL := fmt.Sprintf(
+		"https://registry.hub.docker.com/v2/library/%s/manifests/%s",
+		imageName,
+		imageVersion,
+	)
+
+	req, err := http.NewRequest("GET", manifestURL, nil)
+	if err != nil {
+		return Manifest{}, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer resp.Body.Close()
+
+	var manifest Manifest
+	err = json.NewDecoder(resp.Body).Decode(&manifest)
+	if err != nil {
+		return Manifest{}, err
+	}
+
+	return manifest, nil
+}
+
 func getAuthToken(imageName string) (string, error) {
-	// Ako je image bez namespace-a, pretpostavljamo "library/"
 	if !strings.Contains(imageName, "/") {
 		imageName = "library/" + imageName
 	}
