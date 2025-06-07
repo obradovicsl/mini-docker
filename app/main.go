@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 package main
 
 import (
@@ -19,12 +22,6 @@ func (nullReader) Read(p []byte) (n int, err error) { return len(p), nil }
 
 // Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
 func main() {
-	// You can use print statements as follows for debugging,
-	// they'll be visible when running tests.
-
-	// fmt.Println("Logs from your program will appear here!")
-
-	// Uncomment this block to pass the first stage!
 	// mydocker run alpine:latest /usr/local/bin/docker-explorer echo hey
 
 	command := os.Args[3]
@@ -39,9 +36,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Compute destination path inside chroot - 
-	
-	// filepath.Join - joins rootpath + command - chrootDir + command (/tmp/mydocker-jail + /usr/local/bin/docker-explorer) 
+	// Compute destination path inside chroot -
+
+	// filepath.Join - joins rootpath + command - chrootDir + command (/tmp/mydocker-jail + /usr/local/bin/docker-explorer)
 	destPath := filepath.Join(chrootDir, command)
 	// os.MkdirAll - creates all required directories in the destPath path - /tmp/mydocker-jail/usr and /local and /bin ....
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
@@ -49,7 +46,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	
 	// Copy the command binary into chroot jail
 	if err := copyFile(command, destPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to copy binary: %v\n", err)
@@ -67,11 +63,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// PID Namespaces
+
 	// NEW CODE WITH PIPED FD
 	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	cmd.Stdin = nullReader{}
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CloneFlags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
+	}
 
 	if err := cmd.Run(); err != nil {
 		// fmt.Println("Fatall: ", err)
