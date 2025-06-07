@@ -5,6 +5,7 @@ package main
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 )
@@ -19,6 +21,19 @@ import (
 // Ensures gofmt doesn't remove the imports above (feel free to remove this!)
 var _ = os.Args
 var _ = exec.Command
+
+type ManifestList struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	MediaType     string `json:"mediaType"`
+	Manifests     []struct {
+		MediaType string `json:"mediaType"`
+		Digest    string `json:"digest"`
+		Platform  struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+		} `json:"platform"`
+	} `json:"manifests"`
+}
 
 type Manifest struct {
 	SchemaVersion int `json:"schemaVersion"`
@@ -65,7 +80,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Get manifest failed: ", err)
 		os.Exit(1)
 	}
-	
 
 	// CHROOT ISOLATION
 
@@ -77,26 +91,31 @@ func main() {
 	}
 
 	err = getAllLayers(manifest, imageName, token, chrootDir)
-	if err != nil{
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Get all layers failed: ", err)
 		os.Exit(1)
 	}
-	
 
 	// ONLY if it doesn't exist already in the image
-
-	// Compute destination path inside chroot -
-	// filepath.Join - joins rootpath + command - chrootDir + command (/tmp/mydocker-jail + /usr/local/bin/docker-explorer)
 	destPath := filepath.Join(chrootDir, command)
-	// os.MkdirAll - creates all required directories in the destPath path - /tmp/mydocker-jail/usr and /local and /bin ....
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to mkdir: %v\n", err)
-		os.Exit(1)
-	}
 
-	// Copy the command binary into chroot jail
-	if err := copyFile(command, destPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to copy binary: %v\n", err)
+	if _, err := os.Stat(destPath); os.IsNotExist(err) {
+
+		// Compute destination path inside chroot -
+		// filepath.Join - joins rootpath + command - chrootDir + command (/tmp/mydocker-jail + /usr/local/bin/docker-explorer)
+		// os.MkdirAll - creates all required directories in the destPath path - /tmp/mydocker-jail/usr and /local and /bin ....
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to mkdir: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Copy the command binary into chroot jail
+		if err := copyFile(command, destPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to copy binary: %v\n", err)
+			os.Exit(1)
+		}
+	} else if err != nil {
+		fmt.Fprint(os.Stderr, "Failed to check if binary exists in image: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -132,22 +151,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// OLD CODE WITH OUTPUT
-	// output, err := cmd.Output()
-	// if err != nil {
-	// 	fmt.Printf("Err: %v", err)
-	// 	os.Exit(1)
-	// }
-
-	// fmt.Println(string(output))
-
 }
 
 func getAllLayers(manifest Manifest, imageName, token, jailPath string) error {
 	client := &http.Client{}
 
 	for _, layer := range manifest.Layers {
-		fmt.Printf("Fetching layer: %s\n", layer.Digest)
+		// fmt.Printf("Fetching layer: %s\n", layer.Digest)
 
 		layerURL := fmt.Sprintf(
 			"https://registry.hub.docker.com/v2/library/%s/blobs/%s",
@@ -159,16 +169,16 @@ func getAllLayers(manifest Manifest, imageName, token, jailPath string) error {
 			return err
 		}
 
-		req.Header.Set("Authorization", "Bearer " + token)
+		req.Header.Set("Authorization", "Bearer "+token)
 
 		resp, err := client.Do(req)
-		if err != nil{
+		if err != nil {
 			return err
 		}
 
 		defer resp.Body.Close()
-		
-		if resp.StatusCode != http.StatusOK{
+
+		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			return fmt.Errorf("failed to download layer: %s (%d): %s", layer.Digest, resp.StatusCode, string(body))
 		}
@@ -178,17 +188,23 @@ func getAllLayers(manifest Manifest, imageName, token, jailPath string) error {
 			return fmt.Errorf("error extracting layer %s: %v", layer.Digest, err)
 		}
 
-		fmt.Printf("Layer %s extracted.\n", layer.Digest)
+		// fmt.Printf("Layer %s extracted.\n", layer.Digest)
 	}
 
 	return nil
 }
 
 func getImageManifest(imageName, imageVersion, token string) (Manifest, error) {
+
+	digest, err := getManifestUrl(imageName, imageVersion, token)
+	if err != nil {
+		return Manifest{}, err
+	}
+
 	manifestURL := fmt.Sprintf(
 		"https://registry.hub.docker.com/v2/library/%s/manifests/%s",
 		imageName,
-		imageVersion,
+		digest,
 	)
 
 	req, err := http.NewRequest("GET", manifestURL, nil)
@@ -213,6 +229,51 @@ func getImageManifest(imageName, imageVersion, token string) (Manifest, error) {
 	}
 
 	return manifest, nil
+}
+
+func getManifestUrl(imageName, imageVersion, token string) (string, error) {
+
+	systemOS, systemArch := runtime.GOOS, runtime.GOARCH
+	manifestURL := fmt.Sprintf(
+		"https://registry.hub.docker.com/v2/library/%s/manifests/%s",
+		imageName,
+		imageVersion,
+	)
+
+	req, err := http.NewRequest("GET", manifestURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.list.v2+json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to fetch manifest list (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var manifestList ManifestList
+	err = json.NewDecoder(resp.Body).Decode(&manifestList)
+	if err != nil {
+		return "", err
+	}
+
+	for _, manifest := range manifestList.Manifests {
+		if manifest.Platform.Architecture == systemArch && manifest.Platform.OS == systemOS {
+			return manifest.Digest, nil
+		}
+	}
+
+	return "", fmt.Errorf("Manifest not found")
+
 }
 
 func getAuthToken(imageName string) (string, error) {
@@ -255,7 +316,6 @@ func getImageNameAndVersion(imageString string) (string, string, error) {
 
 	return imageName, imageVersion, nil
 }
-
 
 func extractTarGz(gzipStream io.Reader, targetDir string) error {
 	gzReader, err := gzip.NewReader(gzipStream)
@@ -313,7 +373,6 @@ func extractTarGz(gzipStream io.Reader, targetDir string) error {
 
 	return nil
 }
-
 
 // copyFile copies src -> dst
 func copyFile(src, dst string) error {
