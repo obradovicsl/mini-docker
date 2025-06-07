@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 )
 
@@ -23,6 +24,7 @@ func (nullReader) Read(p []byte) (n int, err error) { return len(p), nil }
 // Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
 func main() {
 	// mydocker run alpine:latest /usr/local/bin/docker-explorer echo hey
+	fmt.Println(runtime.GOOS)
 
 	command := os.Args[3]
 	args := os.Args[4:len(os.Args)]
@@ -72,7 +74,7 @@ func main() {
 	cmd.Stdin = nullReader{}
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CloneFlags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
+		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
 	}
 
 	if err := cmd.Run(); err != nil {
