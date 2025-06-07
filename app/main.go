@@ -24,7 +24,6 @@ func (nullReader) Read(p []byte) (n int, err error) { return len(p), nil }
 // Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
 func main() {
 	// mydocker run alpine:latest /usr/local/bin/docker-explorer echo hey
-	fmt.Println(runtime.GOOS)
 
 	command := os.Args[3]
 	args := os.Args[4:len(os.Args)]
