@@ -89,7 +89,7 @@ If you encounter issues, verify that:
     ./your_docker.sh run alpine:latest /path/to/your/executable/binary arguments
     ```
   - In `app/main.go`, the program extracts the command and its arguments from `os.Args` then uses `exec.Command(...)` to configure a process that will run the specified executable.
-- **What actually happens under the hood?** [Fork vs Exec]()
+- *To see how all of this works under the hood check:** [Fork vs Exec](./concepts/fork-vs-exec.md)
 
 ## Challenge 02: Pipe Stdout and Stderr
 - **Goal**: Pipe the child process's stdout and stderr to the parent process.
@@ -100,7 +100,7 @@ If you encounter issues, verify that:
     cmd.Stderr = os.Stderr
     cmd.Stdin = os.Stdin
     ```
-- **What actually happens under the hood?**: [File descriptors]()
+- **What actually happens under the hood?**: [File descriptors](./concepts/file-descriptors.md)
 
 
 ## Challenge 03: Handle Exit Codes
@@ -119,7 +119,7 @@ If you encounter issues, verify that:
     - The `exec` package's `ExitError` struct embeds `os.ProcessState`, which provides the `ExitCode()` method
     - This ensures the parent process exits with the same code as the child.
 - To fully understand this behavior, it's helpful to know how Go interfaces work and how they support polymorphism.  
-- 👉 Read more about go interfaces [here](go-interfaces.md)
+- 👉 Read more about go interfaces [here](./concepts/go-interfaces.md)
 
 ## Challenge 04: Filesystem Isolation
 - **Goal**: Restrict the child process's filesystem access using `chroot`.
