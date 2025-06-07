@@ -4,11 +4,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -24,8 +27,28 @@ func (nullReader) Read(p []byte) (n int, err error) { return len(p), nil }
 func main() {
 	// mydocker run alpine:latest /usr/local/bin/docker-explorer echo hey
 
+	if len(os.Args) < 4 || os.Args[1] != "run" {
+		fmt.Fprintf(os.Stderr, "\nuse: run <image> <command> <arg1> <arg2> .... <argN>")
+		os.Exit(1)
+	}
+
 	command := os.Args[3]
 	args := os.Args[4:len(os.Args)]
+
+	// get image name and version
+	imageName, imageVersion, err := getImageNameAndVersion(os.Args[2])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to extract image: %v\n", err)
+		os.Exit(1)
+	}
+
+	println(imageName, imageVersion)
+	token, err := getAuthToken(imageName)
+	if err != nil {
+		fmt.Fprint(os.Stderr, "Auth failed: ", err)
+		os.Exit(1)
+	}
+	fmt.Println("Token: ", token)
 
 	// CHROOT ISOLATION
 
@@ -36,8 +59,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Compute destination path inside chroot -
+	// ONLY if it doesn't exist already in the image
 
+	// Compute destination path inside chroot -
 	// filepath.Join - joins rootpath + command - chrootDir + command (/tmp/mydocker-jail + /usr/local/bin/docker-explorer)
 	destPath := filepath.Join(chrootDir, command)
 	// os.MkdirAll - creates all required directories in the destPath path - /tmp/mydocker-jail/usr and /local and /bin ....
@@ -93,6 +117,48 @@ func main() {
 
 	// fmt.Println(string(output))
 
+}
+
+func getAuthToken(imageName string) (string, error) {
+	// Ako je image bez namespace-a, pretpostavljamo "library/"
+	if !strings.Contains(imageName, "/") {
+		imageName = "library/" + imageName
+	}
+
+	authURL := fmt.Sprintf(
+		"https://auth.docker.io/token?service=registry.docker.io&scope=repository:%s:pull",
+		imageName,
+	)
+
+	resp, err := http.Get(authURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to get token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status from auth: %s", resp.Status)
+	}
+
+	var data struct {
+		Token string `json:"token"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", fmt.Errorf("failed to decode token response: %w", err)
+	}
+
+	return data.Token, nil
+}
+
+func getImageNameAndVersion(imageString string) (string, string, error) {
+	if !strings.Contains(imageString, ":") {
+		return imageString, "latest", nil
+	}
+	parts := strings.Split(imageString, ":")
+	imageName, imageVersion := parts[0], parts[1]
+
+	return imageName, imageVersion, nil
 }
 
 // copyFile copies src -> dst
