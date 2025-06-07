@@ -4,6 +4,7 @@
 package main
 
 import (
+	"archive/tar"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,6 +76,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	err = getAllLayers(manifest, imageName, token, chrootDir)
+	if err != nil{
+		fmt.Fprintf(os.Stderr, "Get all layers failed: ", err)
+		os.Exit(1)
+	}
+	
+
 	// ONLY if it doesn't exist already in the image
 
 	// Compute destination path inside chroot -
@@ -133,6 +141,47 @@ func main() {
 
 	// fmt.Println(string(output))
 
+}
+
+func getAllLayers(manifest Manifest, imageName, token, jailPath string) error {
+	client := &http.Client{}
+
+	for _, layer := range manifest.Layers {
+		fmt.Printf("Fetching layer: %s\n", layer.Digest)
+
+		layerURL := fmt.Sprintf(
+			"https://registry.hub.docker.com/v2/library/%s/blobs/%s",
+			imageName,
+			layer.Digest,
+		)
+		req, err := http.NewRequest("GET", layerURL, nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", "Bearer " + token)
+
+		resp, err := client.Do(req)
+		if err != nil{
+			return err
+		}
+
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusOK{
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("failed to download layer: %s (%d): %s", layer.Digest, resp.StatusCode, string(body))
+		}
+
+		err = extractTarGz(resp.Body, jailPath)
+		if err != nil {
+			return fmt.Errorf("error extracting layer %s: %v", layer.Digest, err)
+		}
+
+		fmt.Printf("Layer %s extracted.\n", layer.Digest)
+	}
+
+	return nil
 }
 
 func getImageManifest(imageName, imageVersion, token string) (Manifest, error) {
@@ -206,6 +255,65 @@ func getImageNameAndVersion(imageString string) (string, string, error) {
 
 	return imageName, imageVersion, nil
 }
+
+
+func extractTarGz(gzipStream io.Reader, targetDir string) error {
+	gzReader, err := gzip.NewReader(gzipStream)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip reader: %v", err)
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("error reading tar: %v", err)
+		}
+
+		targetPath := filepath.Join(targetDir, header.Name)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			err := os.MkdirAll(targetPath, 0755)
+			if err != nil {
+				return fmt.Errorf("mkdir failed: %v", err)
+			}
+		case tar.TypeReg:
+			err := os.MkdirAll(filepath.Dir(targetPath), 0755)
+			if err != nil {
+				return fmt.Errorf("mkdir for file failed: %v", err)
+			}
+
+			outFile, err := os.Create(targetPath)
+			if err != nil {
+				return fmt.Errorf("failed to create file: %v", err)
+			}
+
+			_, err = io.Copy(outFile, tarReader)
+			if err != nil {
+				outFile.Close()
+				return fmt.Errorf("failed to copy file contents: %v", err)
+			}
+			outFile.Close()
+
+		case tar.TypeSymlink:
+			err := os.Symlink(header.Linkname, targetPath)
+			if err != nil {
+				return fmt.Errorf("failed to create symlink: %v", err)
+			}
+		default:
+			// Other types can be added here
+		}
+	}
+
+	return nil
+}
+
 
 // copyFile copies src -> dst
 func copyFile(src, dst string) error {
