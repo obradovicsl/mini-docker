@@ -39,29 +39,33 @@ type Manifest struct {
 	} `json:"layers"`
 }
 
-// Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
 func main() {
+
+	// Check input validity
 	if len(os.Args) < 4 || os.Args[1] != "run" {
 		fmt.Fprintf(os.Stderr, "\nuse: run <image> <command> <arg1> <arg2> .... <argN>")
 		os.Exit(1)
 	}
 
+	// Get command and arguments
 	command := os.Args[3]
 	args := os.Args[4:len(os.Args)]
 
-	// get image name and version
+	// Get image name and version
 	imageName, imageVersion, err := getImageNameAndVersion(os.Args[2])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to extract image: %v\n", err)
 		os.Exit(1)
 	}
 
+	// Get Auth token
 	token, err := getAuthToken(imageName)
 	if err != nil {
 		fmt.Fprint(os.Stderr, "Auth failed: ", err)
 		os.Exit(1)
 	}
 
+	// Get Manifest for Image
 	manifest, err := getImageManifest(imageName, imageVersion, token)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Get manifest failed: ", err)
@@ -76,20 +80,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to create chroot dr: %v\n", err)
 		os.Exit(1)
 	}
+
 	defer os.RemoveAll(chrootDir)
 
+	// Extract all image layers inside chroot directory
 	err = getAllLayers(manifest, imageName, token, chrootDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Get all layers failed: ", err)
 		os.Exit(1)
 	}
 
-	// ONLY if it doesn't exist already in the image
+
+	// Check if command (its path) exist inside chroot directory - if it comes with the image
 	destPath := filepath.Join(chrootDir, command)
-
 	if _, err := os.Stat(destPath); os.IsNotExist(err) {
+		// If the path of command doesn't exist inside our chroot - we have to copy it from host 
 
-		// Compute destination path inside chroot -
+		// Compute destination path inside chroot:
 		// filepath.Join - joins rootpath + command - chrootDir + command (/tmp/mydocker-jail + /usr/local/bin/docker-explorer)
 		// os.MkdirAll - creates all required directories in the destPath path - /tmp/mydocker-jail/usr and /local and /bin ....
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
@@ -107,32 +114,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Chroot
+	// Make directory chroot
 	if err := syscall.Chroot(chrootDir); err != nil {
 		fmt.Fprint(os.Stderr, "Chroot failed: %v\n", err)
 		os.Exit(1)
 	}
 
+	// Change current directory (path) to '/'
 	if err := os.Chdir("/"); err != nil {
 		fmt.Fprintf(os.Stderr, "Chdir failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// PID Namespaces
-
-	// NEW CODE WITH PIPED FD
+	// Prepare cmd struct - pipe standard FD
 	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	cmd.Stdin = os.Stdin
 
+	// Create PID namespace and unified time shared namespace (host)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
 	}
 
+
+	// Run the command - fork + execvp
 	if err := cmd.Run(); err != nil {
-		// fmt.Println("Fatall: ", err)
-		// os.Exit(1)
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
 		}
@@ -141,47 +148,8 @@ func main() {
 
 }
 
-func getAllLayers(manifest Manifest, imageName, token, jailPath string) error {
-	client := &http.Client{}
 
-	for _, layer := range manifest.Layers {
-		// fmt.Printf("Fetching layer: %s\n", layer.Digest)
-
-		layerURL := fmt.Sprintf(
-			"https://registry.hub.docker.com/v2/library/%s/blobs/%s",
-			imageName,
-			layer.Digest,
-		)
-		req, err := http.NewRequest("GET", layerURL, nil)
-		if err != nil {
-			return err
-		}
-
-		req.Header.Set("Authorization", "Bearer "+token)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return err
-		}
-
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("failed to download layer: %s (%d): %s", layer.Digest, resp.StatusCode, string(body))
-		}
-
-		err = extractTarGz(resp.Body, jailPath)
-		if err != nil {
-			return fmt.Errorf("error extracting layer %s: %v", layer.Digest, err)
-		}
-
-		// fmt.Printf("Layer %s extracted.\n", layer.Digest)
-	}
-
-	return nil
-}
-
+// Get manifest struct
 func getImageManifest(imageName, imageVersion, token string) (Manifest, error) {
 
 	digest, err := getManifestUrl(imageName, imageVersion, token)
@@ -219,6 +187,7 @@ func getImageManifest(imageName, imageVersion, token string) (Manifest, error) {
 	return manifest, nil
 }
 
+// Get manifest url from returned manifest list, based on system architecture and OS
 func getManifestUrl(imageName, imageVersion, token string) (string, error) {
 
 	systemOS, systemArch := runtime.GOOS, runtime.GOARCH
@@ -264,6 +233,7 @@ func getManifestUrl(imageName, imageVersion, token string) (string, error) {
 
 }
 
+// Get authentication token for image:pull
 func getAuthToken(imageName string) (string, error) {
 	if !strings.Contains(imageName, "/") {
 		imageName = "library/" + imageName
@@ -295,6 +265,7 @@ func getAuthToken(imageName string) (string, error) {
 	return data.Token, nil
 }
 
+// Parse imageString in order to return name and version of the image (ubuntu:latest) -> ubuntu, latest
 func getImageNameAndVersion(imageString string) (string, string, error) {
 	if !strings.Contains(imageString, ":") {
 		return imageString, "latest", nil
@@ -305,6 +276,45 @@ func getImageNameAndVersion(imageString string) (string, string, error) {
 	return imageName, imageVersion, nil
 }
 
+// Fetch and extract into chroot directory all image layers
+func getAllLayers(manifest Manifest, imageName, token, jailPath string) error {
+	client := &http.Client{}
+
+	for _, layer := range manifest.Layers {
+		layerURL := fmt.Sprintf(
+			"https://registry.hub.docker.com/v2/library/%s/blobs/%s",
+			imageName,
+			layer.Digest,
+		)
+		req, err := http.NewRequest("GET", layerURL, nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("failed to download layer: %s (%d): %s", layer.Digest, resp.StatusCode, string(body))
+		}
+
+		err = extractTarGz(resp.Body, jailPath)
+		if err != nil {
+			return fmt.Errorf("error extracting layer %s: %v", layer.Digest, err)
+		}
+	}
+
+	return nil
+}
+
+// Each image layer is .Tar file that has to be extracted - set chmod for every file
 func extractTarGz(gzipStream io.Reader, targetDir string) error {
 	gzReader, err := gzip.NewReader(gzipStream)
 	if err != nil {
@@ -368,7 +378,7 @@ func extractTarGz(gzipStream io.Reader, targetDir string) error {
 	return nil
 }
 
-// copyFile copies src -> dst
+// Copy file from src path to dst path
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
