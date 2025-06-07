@@ -18,10 +18,6 @@ import (
 	"syscall"
 )
 
-// Ensures gofmt doesn't remove the imports above (feel free to remove this!)
-var _ = os.Args
-var _ = exec.Command
-
 type ManifestList struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	MediaType     string `json:"mediaType"`
@@ -36,24 +32,15 @@ type ManifestList struct {
 }
 
 type Manifest struct {
-	SchemaVersion int `json:"schemaVersion"`
-	Config        struct {
-		Digest string `json:"digest"`
-	} `json:"config"`
 	Layers []struct {
-		Digest string `json:"digest"`
-		Size   int    `json:"size"`
+		Digest    string `json:"digest"`
+		Size      int    `json:"size"`
+		MediaType string `json:"mediaType"`
 	} `json:"layers"`
 }
 
-type nullReader struct{}
-
-func (nullReader) Read(p []byte) (n int, err error) { return len(p), nil }
-
 // Usage: your_docker.sh run <image> <command> <arg1> <arg2> ...
 func main() {
-	// mydocker run alpine:latest /usr/local/bin/docker-explorer echo hey
-
 	if len(os.Args) < 4 || os.Args[1] != "run" {
 		fmt.Fprintf(os.Stderr, "\nuse: run <image> <command> <arg1> <arg2> .... <argN>")
 		os.Exit(1)
@@ -89,6 +76,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to create chroot dr: %v\n", err)
 		os.Exit(1)
 	}
+	defer os.RemoveAll(chrootDir)
 
 	err = getAllLayers(manifest, imageName, token, chrootDir)
 	if err != nil {
@@ -136,7 +124,7 @@ func main() {
 	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
-	cmd.Stdin = nullReader{}
+	cmd.Stdin = os.Stdin
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
@@ -339,35 +327,41 @@ func extractTarGz(gzipStream io.Reader, targetDir string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			err := os.MkdirAll(targetPath, 0755)
-			if err != nil {
-				return fmt.Errorf("mkdir failed: %v", err)
+			if err := os.MkdirAll(targetPath, header.FileInfo().Mode()); err != nil {
+				panic("failed to mkdir: " + err.Error())
 			}
 		case tar.TypeReg:
-			err := os.MkdirAll(filepath.Dir(targetPath), 0755)
+			file, err := os.Create(targetPath)
 			if err != nil {
-				return fmt.Errorf("mkdir for file failed: %v", err)
+				panic("failed to create: " + err.Error())
 			}
-
-			outFile, err := os.Create(targetPath)
+			if _, err := io.Copy(file, tarReader); err != nil {
+				panic("failed to copy: " + err.Error())
+			}
+			err = file.Close()
 			if err != nil {
-				return fmt.Errorf("failed to create file: %v", err)
+				panic("failed to close: " + err.Error())
 			}
-
-			_, err = io.Copy(outFile, tarReader)
-			if err != nil {
-				outFile.Close()
-				return fmt.Errorf("failed to copy file contents: %v", err)
-			}
-			outFile.Close()
 
 		case tar.TypeSymlink:
-			err := os.Symlink(header.Linkname, targetPath)
+			absolutePath := filepath.Join(targetDir, header.Linkname)
+			relativePath, err := filepath.Rel(filepath.Dir(targetPath), absolutePath)
 			if err != nil {
-				return fmt.Errorf("failed to create symlink: %v", err)
+				panic("failed relative: " + err.Error())
+			}
+			err = os.Symlink(relativePath, targetPath)
+			if err != nil {
+				panic("failed symlink: " + err.Error())
 			}
 		default:
 			// Other types can be added here
+		}
+
+		err = os.Chmod(targetPath, header.FileInfo().Mode())
+		if err != nil {
+			if !os.IsNotExist(err) {
+				panic("failed to chmod: " + err.Error())
+			}
 		}
 	}
 
