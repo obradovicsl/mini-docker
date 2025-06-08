@@ -334,7 +334,7 @@ Authorization: Bearer <token>
 Accept: application/vnd.docker.distribution.manifest.list.v2+json
 ```
 
-This response includes multiple manifests. We must choose the one matching our host system (check `runtime.GOARCH` and `runtime.GOOS` in Go).
+This response includes multiple manifests. **We must choose the one that matches our host OS and CPU architecture** — for example, x86_64 or ARM. In Go, we can determine this using the built-in `runtime.GOOS` and `runtime.GOARCH` constants.
 
 ---
 
@@ -367,7 +367,11 @@ Headers:
 Authorization: Bearer <token>
 ```
 
-After downloading each layer, we extract it using a Go function like `extractTarGz()`. Order is important — layers are applied sequentially to reconstruct the full filesystem.
+After downloading each layer, we extract it using a Go function like `extractTarGz()`. **Order is important** — layers are applied sequentially to reconstruct the full filesystem.
+
+**Important notes:**
+- After extracting a layer, **we must ensure that any binary/executable files have the correct permissions**. This means calling `chmod` to make them executable if needed (e.g. `chmod +x <path>`).
+- Additionally, **we must verify that the command we intend to run exists in the extracted filesystem**. If it doesn't, we should **manually copy it from the host filesystem into the chroot jail** before execution. This is crucial for minimal base images that may lack common tools.
 
 ---
 
@@ -375,16 +379,23 @@ After downloading each layer, we extract it using a Go function like `extractTar
 
 With this step, we're finally able to give our container a proper root filesystem by dynamically pulling and unpacking Docker images. This mimics what real container runtimes like Docker or containerd do, but we’re doing it ourselves using the public API.
 
-This gives us the final piece needed to run real programs inside isolated environments — with both filesystem and process tree isolation, and a user-defined base image.
+**As a result:**
+- Our chroot directory now contains the full filesystem specified by the provided Docker image.
+- Inside this jail, we can use all the tools that come with the image — such as `echo`, `ls`, and other common Linux utilities.
+- We have a functional, minimal container environment capable of running real Linux programs, isolated by both filesystem and PID namespaces.
+
+---
 
 
-#### Notes on Cross-Platform Execution
-- **Question**: How do Linux binaries in Docker images run on Windows or macOS?
-- **Answer**:
-  - Docker images contain Linux ELF executables, compiled for Linux environments.
-  - On **Windows**, Docker uses WSL 2, which provides a Linux kernel.
-  - On **macOS**, Docker runs containers in a lightweight Linux VM using Apple's Hypervisor framework.
-  - The Linux kernel ensures compatibility, regardless of the host OS.
+#### Question: Aren’t the binaries inside a container image (like `bash`, `grep`, etc.) compiled for a specific Linux environment? How can they run on Windows or macOS host machine?
+
+Yes — the binaries bundled in container images are Linux ELF executables, compiled to run on a Linux system with a Linux kernel. So how do they work on non-Linux hosts?
+
+- **On Windows**, Docker relies on **WSL 2 (Windows Subsystem for Linux 2)**, which provides a full Linux kernel and environment. Containers actually run inside that Linux kernel.
+- **On macOS**, Docker uses a **lightweight virtual machine** (managed through Apple’s Hypervisor.framework) to boot a minimal Linux OS and run containers inside it.
+
+In both cases, even though the host OS is not Linux, the actual execution of container processes happens inside a real Linux environment. That’s how these Linux-compiled binaries are able to run correctly and consistently across platforms.
+
 
 ---
 
