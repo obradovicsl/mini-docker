@@ -138,8 +138,6 @@ We’ll set up a basic chroot jail for the child process that gets spawned durin
 3. Calling `chroot()` before executing the child process.
 4. Handling quirks like needing a valid `/dev/null`.
 
----
-
 ## Implementation Steps
 
 ### 1. Create a chroot jail directory
@@ -205,7 +203,6 @@ cmd.Stdout = os.Stdout
 cmd.Stderr = os.Stderr
 ```
 
----
 
 ## Summary
 
@@ -214,15 +211,15 @@ With chroot in place, we’ve created a lightweight version of filesystem isolat
 
 # Challenge 05: Process Isolation
 
-## Goal
+### Goal
 
 Isolate the process tree using PID namespaces so that the child process does not have access to other processes on the host system.
 
-## Why This Matters
+### Why This Matters
 
 Even though we already limited filesystem access using `chroot`, a malicious or misbehaving program could still interact with other processes. It could list them, send them signals, or monitor what they're doing. To prevent that, we want to isolate the **process namespace**, so that the program only sees itself and its children — just like in a real container.
 
-## Overview
+### Overview
 
 In Linux, this type of isolation is made possible with **namespaces**. Namespaces wrap global system resources and make them appear private to processes inside the namespace. There are many types of namespaces (network, mount, user, etc.), and here we focus on:
 
@@ -231,7 +228,7 @@ In Linux, this type of isolation is made possible with **namespaces**. Namespace
 
 We’ll apply these using Go’s `SysProcAttr`, which is part of the `os/exec` package. But keep in mind — these are Linux-specific features, so this solution won’t compile on Windows or macOS.
 
-## Implementation
+### Implementation
 
 ### Step 1: Enable Linux-specific build
 
@@ -239,9 +236,18 @@ At the top of your `main.go`, add:
 
 ```go
 //go:build linux
+// +build linux
 ```
 
 This ensures the file only compiles when building on a Linux system.
+If you don’t add this, and try to build or run the code on a non-Linux machine (like macOS or Windows), you’ll get compilation errors. That’s because:
+
+ - Linux-specific system calls like `syscall.Clone` and constants like `CLONE_NEWPID` or `Cloneflags` don’t exist on other platforms.
+ - These features rely on Linux kernel namespaces, which are not available on other operating systems.
+By using the `//go:build linux directive`, you’re telling the Go compiler:
+
+“Only include this file when building for Linux.”
+This prevents the program from breaking on incompatible systems.
 
 ### Step 2: Set `SysProcAttr`
 
@@ -278,41 +284,99 @@ cmd.SysProcAttr = &syscall.SysProcAttr{
 This challenge builds a critical part of containerization — **process isolation** — and gives us another piece of what makes tools like Docker so powerful, but also so elegantly built on top of the Linux kernel.
 
 
-## Challenge 06: Fetch Docker Image
-- **Goal**: Fetch a Docker image from the Docker Registry and extract it into the chroot jail.
-- **Implementation**:
-  1. **Authenticate**:
-     - Send an HTTP GET request to:
-       ```text
-       https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/<image>:pull
-       ```
-     - Returns a bearer token.
-  2. **Get Manifest**:
-     - Request the manifest list:
-       ```text
-       https://registry.hub.docker.com/v2/library/<image>/manifests/<tag>
-       ```
-       - Headers:
-         ```text
-         Authorization: Bearer <token>
-         Accept: application/vnd.docker.distribution.manifest.list.v2+json
-         ```
-     - Select the manifest for the current architecture (`runtime.GOOS` and `runtime.GOARCH`).
-     - Request the image manifest:
-       ```text
-       https://registry.hub.docker.com/v2/library/<image>/manifests/<digest>
-       ```
-       - Headers:
-         ```text
-         Accept: application/vnd.docker.distribution.manifest.v2+json
-         ```
-  3. **Fetch and Extract Layers**:
-     - Download each layer (`.tar.gz` files) from:
-       ```text
-       https://registry.hub.docker.com/v2/library/<image>/blobs/<digest>
-       ```
-     - Extract layers into the chroot jail using a function like `extractTarGz`.
-     - Combine layers in order to reconstruct the image filesystem.
+# Challenge 06: Fetch Docker Image
+
+### Goal
+
+Fetch a Docker image from the Docker Registry and extract it into our chroot jail so the container has a usable filesystem.
+
+### Overview
+
+At this point, we've isolated the filesystem (using `chroot`) and the process tree (using PID namespaces). However, we're still missing the actual content of a container image — the file system that the image provides. In this challenge, we'll use the Docker Registry HTTP API to download and unpack a public image like `alpine:latest`.
+
+We'll perform the same steps that a real Docker client does under the hood:
+
+1. Authenticate with the Docker Registry.
+2. Fetch the manifest list for the image.
+3. Select the manifest that matches our system's OS and architecture.
+4. Download each layer.
+5. Extract all the layers in order into the chroot jail.
+
+---
+
+### Step-by-step
+
+#### 1. Authenticate with the Docker Registry
+
+To access any image, we must first obtain an access token. This is done by sending a GET request to:
+
+```
+https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/<image>:pull
+```
+
+If the image name is valid, the server will return a Bearer token. We'll use this token to authenticate our next requests.
+
+---
+
+#### 2. Get the Manifest List
+
+A manifest is essentially a blueprint of an image — it lists all the filesystem layers the image is made of.
+
+In newer versions of the Docker Registry API, the initial manifest request returns a **manifest list** — a list of manifests for each platform (OS and architecture).
+
+We send a GET request with the proper headers:
+
+```
+GET https://registry.hub.docker.com/v2/library/<image>/manifests/<tag>
+
+Headers:
+Authorization: Bearer <token>
+Accept: application/vnd.docker.distribution.manifest.list.v2+json
+```
+
+This response includes multiple manifests. We must choose the one matching our host system (check `runtime.GOARCH` and `runtime.GOOS` in Go).
+
+---
+
+#### 3. Get the Platform-Specific Manifest
+
+Once we’ve selected the correct manifest from the list, we send another GET request to fetch it:
+
+```
+GET https://registry.hub.docker.com/v2/library/<image>/manifests/<digest>
+
+Headers:
+Authorization: Bearer <token>
+Accept: application/vnd.docker.distribution.manifest.v2+json
+```
+
+This response will contain a list of layers, each represented by a digest (hash).
+
+---
+
+#### 4. Download and Extract Layers
+
+Each layer is a `.tar.gz` archive that contains part of the image's file system.
+
+To download a layer:
+
+```
+GET https://registry.hub.docker.com/v2/library/<image>/blobs/<digest>
+
+Headers:
+Authorization: Bearer <token>
+```
+
+After downloading each layer, we extract it using a Go function like `extractTarGz()`. Order is important — layers are applied sequentially to reconstruct the full filesystem.
+
+---
+
+### Summary
+
+With this step, we're finally able to give our container a proper root filesystem by dynamically pulling and unpacking Docker images. This mimics what real container runtimes like Docker or containerd do, but we’re doing it ourselves using the public API.
+
+This gives us the final piece needed to run real programs inside isolated environments — with both filesystem and process tree isolation, and a user-defined base image.
+
 
 #### Notes on Cross-Platform Execution
 - **Question**: How do Linux binaries in Docker images run on Windows or macOS?
@@ -353,7 +417,6 @@ This challenge builds a critical part of containerization — **process isolatio
 ---
 
 ## Next Steps
-- Enhance error handling in `main.go` for HTTP requests and system calls.
 - Add support for additional namespace types (e.g., network namespaces).
 - Implement cgroup resource limits for memory and CPU.
 - Improve the `extractTarGz` function to handle more tar file types (e.g., hard links).
