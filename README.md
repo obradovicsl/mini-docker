@@ -86,19 +86,19 @@ docker run alpine:latest sh
 ```
 a lot of things happen under the hood. Here's what it roughly boils down to:
 1. **A new process is created.**
- - This will be the actual thing(executable/program) you want to run — for example, `/bin/sh`. Under the hood, this is done by forking the current process, and then calling `execvp` to turn that child into the command you passed.
+    - This will be the actual thing(executable/program) you want to run — for example, `/bin/sh`. Under the hood, this is done by forking the current process, and then calling `execvp` to turn that child into the command you passed.
 2. **Standard I/O is wired.**
- - We hook up the child's stdin, stdout, and stderr to the parent process, so we can interact with the container like a normal CLI tool.
+    - We hook up the child's stdin, stdout, and stderr to the parent process, so we can interact with the container like a normal CLI tool.
 3. **But it's not isolated yet.**
- - At this point, we’ve just launched a new process — but it can still see the full host filesystem. It can `ls /home`, read your secrets, modify files, and even see and interact with all the other processes on the system. Not good.
+    - At this point, we’ve just launched a new process — but it can still see the full host filesystem. It can `ls /home`, read your secrets, modify files, and even see and interact with all the other processes on the system. Not good.
 4. **So we isolate the filesystem using `chroot`.**
- - We set up a “jail” directory, and use `chroot` to change the root of the child process. From its perspective, it’s now running in a new root — it literally cannot see anything outside that directory.
+    - We set up a “jail” directory, and use `chroot` to change the root of the child process. From its perspective, it’s now running in a new root — it literally cannot see anything outside that directory.
 5. **We isolate the process tree using PID namespaces.**
- - The container gets its own PID namespace. From inside, it sees itself as PID 1 — like an init system. It has no idea any other processes even exist. It can’t send signals outside its namespace. It lives in its own little world.
+    - The container gets its own PID namespace. From inside, it sees itself as PID 1 — like an init system. It has no idea any other processes even exist. It can’t send signals outside its namespace. It lives in its own little world.
 6. **But wait — the jail is empty.**
- - Running ls inside the jail shows... nothing. A blank filesystem. That’s useless.
+    - Running ls inside the jail shows... nothing. A blank filesystem. That’s useless.
 7. **We download and unpack the container image.**
- - Using the Docker Registry HTTP API, we fetch something like `alpine:latest`, unpack it, and lay it out inside the jail directory. Now, our process sees a complete, working Linux root filesystem, with basic tools and libraries preinstalled.
+    - Using the Docker Registry HTTP API, we fetch something like `alpine:latest`, unpack it, and lay it out inside the jail directory. Now, our process sees a complete, working Linux root filesystem, with basic tools and libraries preinstalled.
 
 ---
 
