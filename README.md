@@ -82,7 +82,7 @@ If you encounter issues, verify that:
 
 ## Challenge 01 - Execute a Command
 - **Goal**: Execute a simple command provided via the command line using Go.
-- **Overview**: 
+- **Overview**: Here, we're mimicking the basic behavior of `docker run`. The goal is simple: take a command and its arguments from the user, and use Go to run that binary as a child process. No isolation yet — just launching a program based on input, like Docker does behind the scenes.
 - **Implementation**:
   - The `your_docker.sh` script compiles the `app/main.go` program and passes the provided command and arguments to the executable.
   - Example command:
@@ -94,6 +94,7 @@ If you encounter issues, verify that:
 
 ## Challenge 02: Pipe Stdout and Stderr
 - **Goal**: Pipe the child process's stdout and stderr to the parent process.
+- **Overview** In this step, we want the child process to behave like it's running directly in your terminal — so its output and input go through your screen and keyboard. We connect its standard input/output/error streams to match the parent’s, just like real containers do.
 - **Implementation**:
   - Modified `main.go` to set:
     ```go
@@ -106,6 +107,7 @@ If you encounter issues, verify that:
 
 ## Challenge 03: Handle Exit Codes
 - **Goal**: Relay the child process's exit code to the parent process.
+- **Overview**: Here we make sure that if the child process fails or exits with a specific code, our program does the same. This is important so that other tools or scripts using our program can know what actually happened — just like with real CLI tools.
 - **Implementation**:
   - Check for `*exec.ExitError` to retrieve the exit code:
     ```go
@@ -121,44 +123,160 @@ If you encounter issues, verify that:
     - This ensures the parent process exits with the same code as the child.
 - To fully understand this behavior, it's helpful to know how Go interfaces work and how they support polymorphism. 👉 [Go Interfaces](./concepts/go-interfaces.md)
 
-## Challenge 04: Filesystem Isolation
-- **Goal**: Restrict the child process's filesystem access using `chroot`.
-- **Implementation**:
-  - Create a temporary chroot jail directory using `os.MkdirTemp`:
-    ```go
-    chrootDir, err := os.MkdirTemp("", "mydocker-jail")
-    ```
-  - Copy the executable to the jail:
-    ```go
-    destPath := filepath.Join(chrootDir, command)
-    os.MkdirAll(filepath.Dir(destPath), 0755)
-    copyFile(command, destPath)
-    ```
-  - Call `syscall.Chroot` and set the working directory:
-    ```go
-    syscall.Chroot(chrootDir)
-    os.Chdir("/")
-    ```
-  - **Issue**: `Cmd.Run()` requires `/dev/null`. Options:
-    1. Create `/dev/null` in the chroot jail:
-       ```go
-       syscall.Mknod(filepath.Join(chrootDir, "dev/null"), syscall.S_IFCHR|0666, 0)
-       ```
-    2. Ensure `Cmd.Stdout`, `Cmd.Stderr`, and `Cmd.Stdin` are not `nil`.
+# Challenge 04: Filesystem Isolation
 
-## Challenge 05: Process Isolation
-- **Goal**: Isolate the process tree using PID namespaces.
-- **Implementation**:
-  - Use `SysProcAttr` with `CLONE_NEWPID`:
-    ```go
-    cmd.SysProcAttr = &syscall.SysProcAttr{
-        Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
-    }
-    ```
-  - **Details**:
-    - `CLONE_NEWPID` creates a new PID namespace, making the child process appear as PID 1.
-    - `CLONE_NEWUTS` isolates the hostname.
-    - Requires Linux-specific syscalls, hence the `//go:build linux` directive.
+### What is chroot?
+
+`chroot` (short for *change root*) is a system call that changes the root directory (`/`) for the current process and all of its children. Once the process is inside the chroot environment, it can't see or access files outside of that new root — effectively isolating its view of the filesystem. This isolated view is often called a **chroot jail**.
+
+### What We’re Building
+
+We’ll set up a basic chroot jail for the child process that gets spawned during `mydocker run ...`. This involves:
+
+1. Creating a temporary jail directory.
+2. Copying the binary being executed into the jail.
+3. Calling `chroot()` before executing the child process.
+4. Handling quirks like needing a valid `/dev/null`.
+
+---
+
+## Implementation Steps
+
+### 1. Create a chroot jail directory
+
+We use Go's `os.MkdirTemp` to create an isolated temporary directory:
+
+```go
+chrootDir, err := os.MkdirTemp("", "mydocker-jail")
+```
+
+This gives us a unique path like `/tmp/mydocker-jail-123456`, where we'll simulate the root.
+
+### 2. Copy the executable to the jail
+
+We need to ensure the binary we want to run (e.g., `/usr/local/bin/docker-explorer`) exists inside the jail. This requires:
+
+* Building the full destination path inside the jail:
+
+  ```go
+  destPath := filepath.Join(chrootDir, command)
+  ```
+* Making sure all parent directories exist:
+
+  ```go
+  os.MkdirAll(filepath.Dir(destPath), 0755)
+  ```
+* Copying the binary from the host into the jail:
+
+  ```go
+  copyFile(command, destPath)
+  ```
+
+### 3. Enter the jail using chroot
+
+Once the setup is complete:
+
+```go
+syscall.Chroot(chrootDir)
+os.Chdir("/")
+```
+
+This sets `/` from the child process's perspective to be the root of the chroot jail.
+
+### 4. Handle /dev/null issue
+
+The Go `exec.Cmd` family expects `/dev/null` to exist by default. If it's not there, things may break.
+You have two options:
+
+#### Option 1: Create /dev/null manually
+
+```go
+syscall.Mkdir(filepath.Join(chrootDir, "dev"), 0755)
+syscall.Mknod(filepath.Join(chrootDir, "dev/null"), syscall.S_IFCHR|0666, int(unix.Mkdev(1, 3)))
+```
+
+#### Option 2: Manually wire `os.Stdin`, `os.Stdout`, and `os.Stderr`
+
+If these are explicitly set (and not `nil`), Go won’t complain about `/dev/null` missing:
+
+```go
+cmd.Stdin = os.Stdin
+cmd.Stdout = os.Stdout
+cmd.Stderr = os.Stderr
+```
+
+---
+
+## Summary
+
+With chroot in place, we’ve created a lightweight version of filesystem isolation — a key building block of real containers. It's not perfect security, but it’s a fundamental concept worth learning. Just like Docker isolates containers, here we’re isolating our process to only see what we allow it to see.
+
+
+# Challenge 05: Process Isolation
+
+## Goal
+
+Isolate the process tree using PID namespaces so that the child process does not have access to other processes on the host system.
+
+## Why This Matters
+
+Even though we already limited filesystem access using `chroot`, a malicious or misbehaving program could still interact with other processes. It could list them, send them signals, or monitor what they're doing. To prevent that, we want to isolate the **process namespace**, so that the program only sees itself and its children — just like in a real container.
+
+## Overview
+
+In Linux, this type of isolation is made possible with **namespaces**. Namespaces wrap global system resources and make them appear private to processes inside the namespace. There are many types of namespaces (network, mount, user, etc.), and here we focus on:
+
+* `CLONE_NEWPID`: to isolate the process tree
+* `CLONE_NEWUTS`: to isolate the hostname
+
+We’ll apply these using Go’s `SysProcAttr`, which is part of the `os/exec` package. But keep in mind — these are Linux-specific features, so this solution won’t compile on Windows or macOS.
+
+## Implementation
+
+### Step 1: Enable Linux-specific build
+
+At the top of your `main.go`, add:
+
+```go
+//go:build linux
+```
+
+This ensures the file only compiles when building on a Linux system.
+
+### Step 2: Set `SysProcAttr`
+
+In your `main.go`, when you configure the command to run, set the `SysProcAttr` field:
+
+```go
+cmd.SysProcAttr = &syscall.SysProcAttr{
+    Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
+}
+```
+
+### Step 3: Why It Works
+
+* `CLONE_NEWPID` tells the kernel to create a new PID namespace.
+
+  * Inside that namespace, the child process will see itself as PID 1.
+  * It will not be able to see or signal any process outside of the namespace.
+* `CLONE_NEWUTS` creates a new UTS (Unix Time-Sharing) namespace.
+
+  * It allows the child process to have its own hostname, isolated from the host system.
+
+### Step 4: Caveats
+
+* You must launch a child **shell** process for the new PID namespace to take effect properly — running a direct command won’t create a new PID namespace properly unless the process forks another child inside it.
+* All of this depends on Linux’s `clone()` system call, which is a lower-level variant of `fork()` that allows for precise namespace control.
+
+### Additional Resources
+
+* Learn more about `/proc` and PID 1 behavior in containers
+* Dive deeper into Linux namespaces in man pages: `man 7 namespaces`
+
+---
+
+This challenge builds a critical part of containerization — **process isolation** — and gives us another piece of what makes tools like Docker so powerful, but also so elegantly built on top of the Linux kernel.
+
 
 ## Challenge 06: Fetch Docker Image
 - **Goal**: Fetch a Docker image from the Docker Registry and extract it into the chroot jail.
