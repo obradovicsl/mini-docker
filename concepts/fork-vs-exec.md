@@ -19,7 +19,7 @@ But under the hood, Go is triggering the classic **fork-exec** mechanism that ev
 
 
 ### Why This Matters
-Understanding how `fork()` and `exec()` work isn’t just trivia — it’s foundational whenyou're trying to build something like a container from scratch. 
+Understanding how `fork()` and `exec()` work isn’t just trivia — it’s foundational when you're trying to build something like a container from scratch. 
 
 **fork ➝ exec**
 
