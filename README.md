@@ -78,6 +78,28 @@ If you encounter issues, verify that:
 - The Go compiler is installed (for Linux) or included in the Docker image.
 - The correct image and command are specified (e.g., `alpine:latest` and `/bin/echo`).
 
+## Overview: What Does `docker run` *Really* Do?
+At its core, a Docker container is nothing magical — it's just a process. A regular old Linux process. It has a PID, a user, a group, you can `kill` it with signal 9, and you can see it with `ps aux`. No bleeding-edge tech — just clever use of old kernel primitives.
+But when you run:
+```bash
+docker run alpine:latest sh
+```
+a lot of things happen under the hood. Here's what it roughly boils down to:
+1. **A new process is created.**
+ - This will be the actual thing(executable/program) you want to run — for example, `/bin/sh`. Under the hood, this is done by forking the current process, and then calling `execvp` to turn that child into the command you passed.
+2. **Standard I/O is wired.**
+ - We hook up the child's stdin, stdout, and stderr to the parent process, so we can interact with the container like a normal CLI tool.
+3. **But it's not isolated yet.**
+ - At this point, we’ve just launched a new process — but it can still see the full host filesystem. It can `ls /home`, read your secrets, modify files, and even see and interact with all the other processes on the system. Not good.
+4. **So we isolate the filesystem using `chroot`.**
+ - We set up a “jail” directory, and use `chroot` to change the root of the child process. From its perspective, it’s now running in a new root — it literally cannot see anything outside that directory.
+5. **We isolate the process tree using PID namespaces.**
+ - The container gets its own PID namespace. From inside, it sees itself as PID 1 — like an init system. It has no idea any other processes even exist. It can’t send signals outside its namespace. It lives in its own little world.
+6. **But wait — the jail is empty.**
+ - Running ls inside the jail shows... nothing. A blank filesystem. That’s useless.
+7. **We download and unpack the container image.**
+ - Using the Docker Registry HTTP API, we fetch something like `alpine:latest`, unpack it, and lay it out inside the jail directory. Now, our process sees a complete, working Linux root filesystem, with basic tools and libraries preinstalled.
+
 ---
 
 ## Challenge 01 - Execute a Command
@@ -291,8 +313,7 @@ This challenge builds a critical part of containerization — **process isolatio
 Fetch a Docker image from the Docker Registry and extract it into our chroot jail so the container has a usable filesystem.
 
 ### Overview
-
-At this point, we've isolated the filesystem (using `chroot`) and the process tree (using PID namespaces). However, we're still missing the actual content of a container image — the file system that the image provides. In this challenge, we'll use the Docker Registry HTTP API to download and unpack a public image like `alpine:latest`.
+At this point, we've isolated the filesystem (using `chroot`) and the process tree (using `PID namespaces`). However, from the process's perspective, the current root directory is still empty — if we ran ls, we'd see nothing inside. What we're missing is the actual content of a container image — a functional Linux root filesystem with tools and libraries (e.g., from `alpine:latest`). In this challenge, we'll use the Docker Registry HTTP API to download and unpack such an image into our jail directory, so that the process sees a complete root filesystem when it starts.
 
 We'll perform the same steps that a real Docker client does under the hood:
 
@@ -418,12 +439,6 @@ In both cases, even though the host OS is not Linux, the actual execution of con
   syscall.Chroot(chrootDir)
   os.Chdir("/")
   ```
-
-### Docker Registry API
-- **Authentication**: Uses OAuth2 bearer tokens.
-- **Manifest List**: Provides a list of manifests for different platforms.
-- **Manifest**: Contains the list of filesystem layers.
-- **Layers**: `.tar.gz` files that form the image filesystem when extracted.
 
 ---
 
