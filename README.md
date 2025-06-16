@@ -145,7 +145,7 @@ a lot of things happen under the hood. Here's what it roughly boils down to:
     - This ensures the parent process exits with the same code as the child.
 - To fully understand this behavior, it's helpful to know how Go interfaces work and how they support polymorphism. 👉 [Go Interfaces](./concepts/go-interfaces.md)
 
-# Challenge 04: Filesystem Isolation
+## Challenge 04: Filesystem Isolation
 
 ### What is chroot?
 
@@ -231,7 +231,7 @@ cmd.Stderr = os.Stderr
 With chroot in place, we’ve created a lightweight version of filesystem isolation — a key building block of real containers. It's not perfect security, but it’s a fundamental concept worth learning. Just like Docker isolates containers, here we’re isolating our process to only see what we allow it to see.
 
 
-# Challenge 05: Process Isolation
+## Challenge 05: Process Isolation
 
 ### Goal
 
@@ -306,7 +306,7 @@ cmd.SysProcAttr = &syscall.SysProcAttr{
 This challenge builds a critical part of containerization — **process isolation** — and gives us another piece of what makes tools like Docker so powerful, but also so elegantly built on top of the Linux kernel.
 
 
-# Challenge 06: Fetch Docker Image
+## Challenge 06: Fetch Docker Image
 
 ### Goal
 
